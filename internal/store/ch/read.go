@@ -98,9 +98,9 @@ func (s *Store) IssueEvents(ctx context.Context, projectID, issueID uint64, befo
 	rows, err := s.conn.Query(ctx, `
 		SELECT replaceAll(toString(event_id), '-', ''), timestamp, level, release, environment, user_key
 		FROM events
-		WHERE project_id = ? AND issue_id = ? AND timestamp < ?
+		WHERE project_id = ? AND issue_id = ? AND timestamp < toDateTime64(?, 3, 'UTC')
 		ORDER BY timestamp DESC, event_id DESC
-		LIMIT ?`, projectID, issueID, before, limit)
+		LIMIT ?`, projectID, issueID, ms(before), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -143,20 +143,28 @@ func (s *Store) Event(ctx context.Context, projectID, issueID uint64, eventID st
 
 // Neighbors — соседние события для кнопок «старее» и «новее».
 func (s *Store) Neighbors(ctx context.Context, projectID, issueID uint64, ev store.Event) (older, newer string, err error) {
-	id := uuidString(ev.EventID)
+	id, ts := uuidString(ev.EventID), ms(ev.Timestamp)
 	one := func(cond, order string) (string, error) {
 		var v string
 		err := s.conn.QueryRow(ctx, `SELECT replaceAll(toString(event_id), '-', '') FROM events
-			WHERE project_id = ? AND issue_id = ? AND `+cond+` ORDER BY `+order+` LIMIT 1`,
-			projectID, issueID, ev.Timestamp, ev.Timestamp, id).Scan(&v)
+			WHERE project_id = ? AND issue_id = ? AND event_id != toUUID(?) AND `+cond+` ORDER BY `+order+` LIMIT 1`,
+			projectID, issueID, id, ts, ts, id).Scan(&v)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
 		return v, err
 	}
-	if older, err = one(`(timestamp < ? OR (timestamp = ? AND event_id < toUUID(?)))`, `timestamp DESC, event_id DESC`); err != nil {
+	const t = `toDateTime64(?, 3, 'UTC')`
+	if older, err = one(`(timestamp < `+t+` OR (timestamp = `+t+` AND event_id < toUUID(?)))`, `timestamp DESC, event_id DESC`); err != nil {
 		return "", "", err
 	}
-	newer, err = one(`(timestamp > ? OR (timestamp = ? AND event_id > toUUID(?)))`, `timestamp, event_id`)
+	newer, err = one(`(timestamp > `+t+` OR (timestamp = `+t+` AND event_id > toUUID(?)))`, `timestamp, event_id`)
 	return older, newer, err
+}
+
+// ms — время строкой с миллисекундами. time.Time драйвер передаёт
+// с точностью до секунды, а события хранятся с миллисекундами: без этого
+// событие 12:00:00.500 оказывалось «новее» самого себя.
+func ms(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05.000")
 }

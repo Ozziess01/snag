@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -122,7 +123,7 @@ func (e *Event) Culprit() string {
 	if f == nil {
 		return e.Transaction
 	}
-	where := f.Filename
+	where := shortPath(f.Filename)
 	if where == "" {
 		where = f.Module
 	}
@@ -138,6 +139,18 @@ func (e *Event) Culprit() string {
 	default:
 		return fn
 	}
+}
+
+// shortPath: у браузерных кадров имя файла — полный URL с параметрами,
+// для заголовка хватит пути: https://shop.example/app.js?v=3 → /app.js.
+func shortPath(name string) string {
+	if !strings.Contains(name, "://") {
+		return name
+	}
+	if u, err := url.Parse(name); err == nil && u.Path != "" {
+		return u.Path
+	}
+	return name
 }
 
 // isAnonymous: так SDK подписывают безымянные функции и код верхнего уровня.

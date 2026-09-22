@@ -180,6 +180,10 @@ func TestTitleAndCulprit(t *testing.T) {
 	if got := anon.Culprit(); got != "app.mjs" {
 		t.Errorf("анонимная функция: %q", got)
 	}
+	url := &Event{Exception: ValuesOf[Exception]{{Type: "E", Stacktrace: &Stacktrace{Frames: []Frame{{Filename: "https://shop.example/assets/app.js?v=3", Function: "render"}}}}}}
+	if got := url.Culprit(); got != "/assets/app.js in render" {
+		t.Errorf("URL в culprit: %q", got)
+	}
 	if (&Event{}).Title() != "<без названия>" {
 		t.Error("пустое событие")
 	}

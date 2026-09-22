@@ -138,7 +138,8 @@ func TestEventsAndStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hour := time.Now().UTC().Truncate(time.Hour)
+	// Миллисекунды в метках времени нарочно: на них ломалось сравнение.
+	hour := time.Now().UTC().Truncate(time.Hour).Add(123 * time.Millisecond)
 	ev := func(issue uint64, id string, ts time.Time, user, browser string) store.Event {
 		return store.Event{ProjectID: proj.ID, IssueID: issue, EventID: id, Timestamp: ts, ReceivedAt: ts,
 			Level: "error", Platform: "python", Title: "E", UserKey: user,
@@ -155,7 +156,8 @@ func TestEventsAndStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	period := store.Period{Since: hour.Add(-23 * time.Hour), Until: hour.Add(time.Hour), Step: time.Hour}
+	h0 := hour.Truncate(time.Hour)
+	period := store.Period{Since: h0.Add(-23 * time.Hour), Until: h0.Add(time.Hour), Step: time.Hour}
 	stats, err := c.IssueStats(ctx, proj.ID, 0, period)
 	if err != nil {
 		t.Fatal(err)
@@ -205,6 +207,17 @@ func TestEventsAndStats(t *testing.T) {
 	}
 	if _, newest, _ := c.Neighbors(ctx, proj.ID, 1, latest); newest != "" {
 		t.Fatalf("у самого нового события нет «новее»: %q", newest)
+	}
+	single, err := c.Event(ctx, proj.ID, 2, "latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o, n, _ := c.Neighbors(ctx, proj.ID, 2, single); o != "" || n != "" {
+		t.Fatalf("у единственного события нет соседей: %q %q", o, n)
+	}
+	page, _ := c.IssueEvents(ctx, proj.ID, 1, list[1].Timestamp, 10)
+	if len(page) != 2 || page[0].EventID != "00000000000000000000000000000002" {
+		t.Fatalf("следующая страница событий: %+v", page)
 	}
 	if _, err := c.Event(ctx, proj.ID, 1, "ffffffffffffffffffffffffffffffff"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("чужое событие: %v", err)
