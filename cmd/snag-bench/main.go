@@ -2,6 +2,7 @@
 //
 //	snag-bench -dsn http://<key>@localhost:8000/1 -c 64 -d 30s
 //	snag-bench -dsn ... -total 1000000        # ровно миллион событий
+//	snag-bench -dsn ... -demo                 # залить историю демо-магазина
 //
 // Шлёт реалистичные конверты (~2 КБ: стек, крошки, теги, контексты,
 // 200 разных проблем, разные браузеры и пользователи) с -c параллельных
@@ -28,9 +29,12 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Ozziess01/snag/internal/demo"
 )
 
 func main() {
@@ -39,6 +43,7 @@ func main() {
 	dur := flag.Duration("d", 30*time.Second, "длительность (если -total не задан)")
 	total := flag.Int64("total", 0, "отправить ровно столько событий и остановиться")
 	issues := flag.Int("issues", 200, "сколько разных проблем в потоке")
+	demoMode := flag.Bool("demo", false, "не нагружать, а залить историю демо-магазина за две недели")
 	flag.Parse()
 
 	u, err := url.Parse(*dsn)
@@ -50,6 +55,11 @@ func main() {
 	project := u.Path[1:]
 	base := u.Scheme + "://" + u.Host
 	target := fmt.Sprintf("%s/api/%s/envelope/?sentry_key=%s&sentry_version=7", base, project, key)
+
+	if *demoMode {
+		sendDemo(target)
+		return
+	}
 
 	fmt.Printf("готовлю конверты: %d проблем...\n", *issues)
 	pool := buildPool(5000, *issues)
@@ -168,6 +178,24 @@ func personalize(tmpl []byte, r *rand.Rand) []byte {
 	ts := float64(time.Now().UnixMilli())/1000 - r.Float64()*60
 	b = bytes.ReplaceAll(b, []byte(phTime), fmt.Appendf(nil, "%014.3f", ts))
 	return b
+}
+
+// sendDemo заливает историю демо-магазина — ту же, что в демо в браузере.
+func sendDemo(target string) {
+	envs := demo.Envelopes(time.Now())
+	for _, env := range envs {
+		resp, err := http.Post(target, "text/plain;charset=UTF-8", strings.NewReader(env))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			fmt.Fprintln(os.Stderr, "приём ответил", resp.Status)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("отправлено %d событий истории демо-магазина. Проблему %s... можно пометить решённой, чтобы увидеть вкладку «Решённые».\n", len(envs), demo.ResolvedTitle)
 }
 
 var reHealth = regexp.MustCompile(`queue=(\d+) written=(\d+)`)

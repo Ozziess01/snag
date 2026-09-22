@@ -109,6 +109,29 @@ func openStores(ctx context.Context, cfg Config) (*pg.Store, *ch.Store, error) {
 	return p, c, nil
 }
 
+// waitStores подключается к базам и ждёт их до минуты. В docker compose
+// ClickHouse при первом запуске поднимается временно (создаёт пользователя
+// и базу) и перезапускается — healthcheck уже зелёный, а порт на секунду
+// закрыт. Падать из-за этого незачем.
+func waitStores(ctx context.Context, log *slog.Logger, cfg Config) (*pg.Store, *ch.Store, error) {
+	deadline := time.Now().Add(time.Minute)
+	for {
+		p, c, err := openStores(ctx, cfg)
+		if err == nil {
+			return p, c, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, nil, err
+		}
+		log.Warn("жду базы", "err", err)
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	}
+}
+
 func migrate(ctx context.Context, cfg Config) error {
 	p, c, err := openStores(ctx, cfg)
 	if err != nil {
@@ -180,7 +203,7 @@ func serve(log *slog.Logger, cfg Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pgStore, chStore, err := openStores(ctx, cfg)
+	pgStore, chStore, err := waitStores(ctx, log, cfg)
 	if err != nil {
 		return err
 	}

@@ -129,6 +129,17 @@ func TestIssueLifecycle(t *testing.T) {
 	if res[0].Regressed {
 		t.Fatalf("регрессия отмечается один раз: %+v", res)
 	}
+
+	// Повторы не тратят номера: следующая новая проблема получает id
+	// сразу за предыдущей новой, сколько бы обновлений ни было между ними.
+	a, _ := p.UpsertIssues(ctx, []store.IssueDelta{delta(1001, t0, 1)})
+	for range 20 {
+		_, _ = p.UpsertIssues(ctx, []store.IssueDelta{delta(1001, t0, 1), delta(fp, t0, 1)})
+	}
+	b, _ := p.UpsertIssues(ctx, []store.IssueDelta{delta(1002, t0, 1)})
+	if !a[0].Created || !b[0].Created || b[0].ID != a[0].ID+1 {
+		t.Fatalf("id новых проблем: %d и %d, ждали подряд", a[0].ID, b[0].ID)
+	}
 }
 
 func TestEventsAndStats(t *testing.T) {

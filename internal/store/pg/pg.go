@@ -163,8 +163,8 @@ func (s *Store) ByKey(ctx context.Context, key string) (ingest.Project, error) {
 // UpsertIssues создаёт или обновляет проблемы одним запросом на всю пачку.
 //
 // Два приёма Postgres:
-//   - xmax = 0 у возвращённой строки значит, что её только что вставили,
-//     а не обновили — так видно новую проблему без лишнего SELECT;
+//   - xmax = 0 у вставленной строки значит, что её только что создали,
+//     а не обновили при гонке — так видно новую проблему без лишнего SELECT;
 //   - now() одинаков для всего запроса, поэтому regressed_at = now()
 //     в RETURNING значит «переоткрыта именно сейчас».
 //
@@ -197,25 +197,63 @@ func (s *Store) UpsertIssues(ctx context.Context, deltas []store.IssueDelta) ([]
 		firsts[i], lasts[i] = d.FirstSeen, d.LastSeen
 	}
 
+	// Сначала обновляем существующие проблемы и только потом вставляем
+	// новые. Один INSERT … ON CONFLICT DO UPDATE тоже работает, но берёт
+	// номер из последовательности на каждую строку, даже если строка
+	// просто обновилась: после миллиона событий id новых проблем уходили
+	// в десятки тысяч. Теперь номер тратится только на новый отпечаток.
+	// Существующие строки блокируются в порядке (project_id, fingerprint):
+	// несколько воркеров не устроят взаимную блокировку.
 	rows, err := s.pool.Query(ctx, `
-		INSERT INTO issues AS i (project_id, fingerprint, grouping_kind, title, culprit, level, platform,
-		                         first_seen, last_seen, times_seen)
-		SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[],
-		                     $7::text[], $8::timestamptz[], $9::timestamptz[], $10::bigint[])
-		ON CONFLICT (project_id, fingerprint) DO UPDATE SET
-		    first_seen   = LEAST(i.first_seen, EXCLUDED.first_seen),
-		    last_seen    = GREATEST(i.last_seen, EXCLUDED.last_seen),
-		    times_seen   = i.times_seen + EXCLUDED.times_seen,
-		    title        = EXCLUDED.title,
-		    culprit      = EXCLUDED.culprit,
-		    level        = EXCLUDED.level,
-		    status       = CASE WHEN i.status = 'resolved' AND EXCLUDED.last_seen > i.resolved_at
-		                        THEN 'unresolved' ELSE i.status END,
-		    regressed_at = CASE WHEN i.status = 'resolved' AND EXCLUDED.last_seen > i.resolved_at
-		                        THEN now() ELSE i.regressed_at END,
-		    resolved_at  = CASE WHEN i.status = 'resolved' AND EXCLUDED.last_seen > i.resolved_at
-		                        THEN NULL ELSE i.resolved_at END
-		RETURNING id, project_id, fingerprint, (xmax = 0), coalesce(regressed_at = now(), false)`,
+		WITH input AS (
+		    SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[],
+		                         $7::text[], $8::timestamptz[], $9::timestamptz[], $10::bigint[])
+		        AS t(project_id, fingerprint, grouping_kind, title, culprit, level, platform,
+		             first_seen, last_seen, times_seen)
+		),
+		locked AS (
+		    SELECT i.id FROM issues i
+		    JOIN input t ON i.project_id = t.project_id AND i.fingerprint = t.fingerprint
+		    ORDER BY i.project_id, i.fingerprint
+		    FOR UPDATE OF i
+		),
+		upd AS (
+		    UPDATE issues AS i SET
+		        first_seen   = LEAST(i.first_seen, t.first_seen),
+		        last_seen    = GREATEST(i.last_seen, t.last_seen),
+		        times_seen   = i.times_seen + t.times_seen,
+		        title        = t.title,
+		        culprit      = t.culprit,
+		        level        = t.level,
+		        status       = CASE WHEN i.status = 'resolved' AND t.last_seen > i.resolved_at
+		                            THEN 'unresolved' ELSE i.status END,
+		        regressed_at = CASE WHEN i.status = 'resolved' AND t.last_seen > i.resolved_at
+		                            THEN now() ELSE i.regressed_at END,
+		        resolved_at  = CASE WHEN i.status = 'resolved' AND t.last_seen > i.resolved_at
+		                            THEN NULL ELSE i.resolved_at END
+		    FROM input t
+		    WHERE i.id IN (SELECT id FROM locked)
+		      AND i.project_id = t.project_id AND i.fingerprint = t.fingerprint
+		    RETURNING i.id, i.project_id, i.fingerprint, false AS created,
+		              coalesce(i.regressed_at = now(), false) AS regressed
+		),
+		ins AS (
+		    -- Гонка: другой воркер мог вставить тот же отпечаток после снимка —
+		    -- тогда ON CONFLICT обновит его строку.
+		    INSERT INTO issues AS i (project_id, fingerprint, grouping_kind, title, culprit, level, platform,
+		                             first_seen, last_seen, times_seen)
+		    SELECT t.* FROM input t
+		    WHERE NOT EXISTS (SELECT 1 FROM upd u WHERE u.project_id = t.project_id AND u.fingerprint = t.fingerprint)
+		    ON CONFLICT (project_id, fingerprint) DO UPDATE SET
+		        first_seen = LEAST(i.first_seen, EXCLUDED.first_seen),
+		        last_seen  = GREATEST(i.last_seen, EXCLUDED.last_seen),
+		        times_seen = i.times_seen + EXCLUDED.times_seen,
+		        title      = EXCLUDED.title,
+		        culprit    = EXCLUDED.culprit,
+		        level      = EXCLUDED.level
+		    RETURNING i.id, i.project_id, i.fingerprint, (i.xmax = 0) AS created, false AS regressed
+		)
+		SELECT * FROM upd UNION ALL SELECT * FROM ins`,
 		projects, fps, kinds, titles, culprits, levels, platforms, firsts, lasts, counts)
 	if err != nil {
 		return nil, fmt.Errorf("pg: upsert issues: %w", err)

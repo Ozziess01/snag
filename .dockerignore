@@ -1,0 +1,9 @@
+.git
+bin
+*.log
+web/node_modules
+web/dist/app
+web/dist/demo
+tools/capture/node/node_modules
+tools/capture/php/vendor
+tools/capture/python/.venv

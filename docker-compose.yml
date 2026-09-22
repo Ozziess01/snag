@@ -1,8 +1,30 @@
-# Базы для разработки. Сам snag запускается локально: go run ./cmd/snag.
-# Порты сдвинуты от стандартных, чтобы не мешать другим проектам на машине.
+# docker compose up -d --build — Snag вместе с базами:
+#   http://localhost:8000, вход admin@snag.local / snag-admin (смените!)
+#
+# Для разработки (snag запускается через go run) хватит баз:
+#   docker compose up -d postgres clickhouse
+# Порты баз сдвинуты от стандартных, чтобы не мешать другим проектам.
 name: snag
 
 services:
+  snag:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SNAG_PUBLIC_URL: ${SNAG_PUBLIC_URL:-http://localhost:8000}
+      SNAG_PG_DSN: postgres://snag:snag@postgres:5432/snag?sslmode=disable
+      SNAG_CH_DSN: clickhouse://snag:snag@clickhouse:9000/snag
+      SNAG_ADMIN_EMAIL: ${SNAG_ADMIN_EMAIL:-admin@snag.local}
+      SNAG_ADMIN_PASSWORD: ${SNAG_ADMIN_PASSWORD:-snag-admin}
+      SNAG_TELEGRAM_TOKEN: ${SNAG_TELEGRAM_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:18-alpine
     environment:
