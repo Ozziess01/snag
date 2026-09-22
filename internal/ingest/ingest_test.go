@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Ozziess01/snag/internal/grouping"
 )
 
 // ---------- стенд ----------
@@ -147,6 +149,20 @@ func TestRealSDKs(t *testing.T) {
 				t.Errorf("%s: нет события %q", sdk, title)
 			}
 		}
+	}
+
+	// В каждом приложении все ошибки разные, значит и групп столько же.
+	groups := map[string]map[uint64]string{}
+	for _, a := range sink.got {
+		sdk := a.Event.SDK.Name
+		if groups[sdk] == nil {
+			groups[sdk] = map[uint64]string{}
+		}
+		g := grouping.Compute(a.Event)
+		if prev, dup := groups[sdk][g.Hash]; dup {
+			t.Errorf("%s: склеились разные ошибки %q и %q по %v", sdk, prev, a.Event.Title(), g.Parts)
+		}
+		groups[sdk][g.Hash] = a.Event.Title()
 	}
 }
 
