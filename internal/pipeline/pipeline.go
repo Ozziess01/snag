@@ -7,12 +7,19 @@
 // (до BatchSize событий или FlushEvery времени) и пишет её в базы разом:
 // один запрос в Postgres и одна вставка в ClickHouse на пачку, а не на
 // каждое событие.
+//
+// Тяжёлая подготовка события — вычистка секретов, отпечаток, теги — идёт
+// ещё в Accept, то есть в горутине HTTP-запроса: запросов много и они
+// обрабатываются параллельно на всех ядрах. Воркер один, и ему остаётся
+// только свести пачку и записать её. Замер показал, зачем: когда вычистка
+// шла в воркере, он упирался в одно ядро на ~3 тыс. событий в секунду.
 package pipeline
 
 import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,21 +36,35 @@ import (
 // при штатной остановке воркер дописывает всё. Место для постоянной
 // очереди (Redis Streams, NATS) — за этим же интерфейсом ingest.Sink.
 type Queue struct {
-	ch     chan []ingest.Accepted
+	ch     chan []prepared
 	closed atomic.Bool
 }
 
-func NewQueue(size int) *Queue {
-	return &Queue{ch: make(chan []ingest.Accepted, size)}
+// prepared — событие, готовое к записи: отпечаток посчитан, строка для
+// ClickHouse собрана (не хватает только id проблемы).
+type prepared struct {
+	accepted ingest.Accepted
+	group    grouping.Result
+	row      store.Event
 }
 
-// Accept не ждёт: если очередь полна, SDK сразу получает 429.
+func NewQueue(size int) *Queue {
+	return &Queue{ch: make(chan []prepared, size)}
+}
+
+// Accept не ждёт: если очередь полна, SDK сразу получает 429. Полноту
+// проверяем до подготовки, чтобы под перегрузкой не тратить процессор на
+// события, которые всё равно отобьём.
 func (q *Queue) Accept(_ context.Context, batch []ingest.Accepted) error {
-	if q.closed.Load() {
+	if q.closed.Load() || len(q.ch) == cap(q.ch) {
 		return ingest.ErrBusy
 	}
+	items := make([]prepared, len(batch))
+	for i, a := range batch {
+		items[i] = prepared{accepted: a, group: grouping.Compute(a.Event), row: toRow(a)}
+	}
 	select {
-	case q.ch <- batch:
+	case q.ch <- items:
 		return nil
 	default:
 		return ingest.ErrBusy
@@ -89,6 +110,11 @@ type Worker struct {
 	FlushEvery time.Duration
 	// Retries — сколько раз повторить запись в базу, прежде чем сдаться.
 	Retries int
+	// Workers — сколько пачек пишется одновременно. Запись в базы — в
+	// основном ожидание сети, и пока одна пачка ждёт ClickHouse, другая
+	// уже собирается. Postgres это переживает: строки проблем обновляются
+	// в одном порядке, взаимных блокировок нет. 0 — один.
+	Workers int
 
 	Stats Stats
 }
@@ -102,9 +128,22 @@ type Stats struct {
 // Run работает, пока очередь не закрыта, и выходит, записав остаток.
 // Контекст здесь не для остановки, а для отмены долгих повторов.
 func (w *Worker) Run(ctx context.Context) {
+	n := max(w.Workers, 1)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.loop(ctx)
+		}()
+	}
+	wg.Wait()
+}
+
+func (w *Worker) loop(ctx context.Context) {
 	ticker := time.NewTicker(w.FlushEvery)
 	defer ticker.Stop()
-	buf := make([]ingest.Accepted, 0, w.BatchSize)
+	buf := make([]prepared, 0, w.BatchSize)
 	for {
 		select {
 		case batch, ok := <-w.Queue.ch:
@@ -126,20 +165,18 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
+func (w *Worker) flush(ctx context.Context, batch []prepared) {
 	if len(batch) == 0 {
 		return
 	}
 	w.Stats.Batches.Add(1)
 
-	// 1. Группировка и сводка по проблемам.
+	// 1. Сводка по проблемам: отпечатки уже посчитаны в Accept.
 	type key struct{ project, fp uint64 }
-	groups := make([]grouping.Result, len(batch))
 	deltas := map[key]*store.IssueDelta{}
 	lastEvent := map[key]*event.Event{}
-	for i, a := range batch {
-		g := grouping.Compute(a.Event)
-		groups[i] = g
+	for _, p := range batch {
+		a, g := p.accepted, p.group
 		k := key{a.ProjectID, g.Hash}
 		ts := a.Event.Timestamp.Time
 		d, ok := deltas[k]
@@ -184,8 +221,9 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 
 	// 3. События в ClickHouse.
 	rows := make([]store.Event, len(batch))
-	for i, a := range batch {
-		rows[i] = toRow(a, ids[key{a.ProjectID, groups[i].Hash}])
+	for i, p := range batch {
+		rows[i] = p.row
+		rows[i].IssueID = ids[key{p.accepted.ProjectID, p.group.Hash}]
 	}
 	if err := w.retry(ctx, "clickhouse", func() error { return w.Events.InsertEvents(ctx, rows) }); err != nil {
 		w.drop(batch, "clickhouse", err)
@@ -221,12 +259,12 @@ func (w *Worker) retry(ctx context.Context, what string, fn func() error) error 
 	return err
 }
 
-func (w *Worker) drop(batch []ingest.Accepted, store string, err error) {
+func (w *Worker) drop(batch []prepared, store string, err error) {
 	w.Stats.Dropped.Add(int64(len(batch)))
 	w.Log.Error("пачка событий потеряна", "store", store, "events", len(batch), "err", err)
 }
 
-func toRow(a ingest.Accepted, issueID uint64) store.Event {
+func toRow(a ingest.Accepted) store.Event {
 	e := a.Event
 	sdk := ""
 	if e.SDK != nil {
@@ -234,7 +272,6 @@ func toRow(a ingest.Accepted, issueID uint64) store.Event {
 	}
 	return store.Event{
 		ProjectID:   a.ProjectID,
-		IssueID:     issueID,
 		EventID:     e.EventID,
 		Timestamp:   e.Timestamp.Time,
 		ReceivedAt:  a.ReceivedAt,

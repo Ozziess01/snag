@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -39,6 +40,7 @@ type Config struct {
 	ChDSN     string
 	QueueSize int
 	BatchSize int
+	Workers   int
 	// Первый пользователь создаётся при запуске, если задан и его ещё нет:
 	// удобно для docker compose и Codespaces.
 	AdminEmail    string
@@ -48,6 +50,9 @@ type Config struct {
 	// Адрес Bot API: по умолчанию api.telegram.org, можно свой
 	// (self-hosted telegram-bot-api) или фейковый для проверки.
 	TelegramAPI string
+	// Адрес для профилировщика Go (127.0.0.1:6060). Пусто — выключен.
+	// Отдельный порт, чтобы профили никогда не торчали наружу вместе с API.
+	PprofAddr string
 }
 
 func config() Config {
@@ -58,11 +63,13 @@ func config() Config {
 		ChDSN:     env("SNAG_CH_DSN", "clickhouse://snag:snag@127.0.0.1:19000/snag"),
 		QueueSize: envInt("SNAG_QUEUE_SIZE", 10_000),
 		BatchSize: envInt("SNAG_BATCH_SIZE", 5_000),
+		Workers:   envInt("SNAG_WORKERS", 4),
 
 		AdminEmail:    os.Getenv("SNAG_ADMIN_EMAIL"),
 		AdminPassword: os.Getenv("SNAG_ADMIN_PASSWORD"),
 		TelegramToken: os.Getenv("SNAG_TELEGRAM_TOKEN"),
 		TelegramAPI:   os.Getenv("SNAG_TELEGRAM_API"),
+		PprofAddr:     os.Getenv("SNAG_PPROF"),
 	}
 }
 
@@ -198,6 +205,9 @@ func serve(log *slog.Logger, cfg Config) error {
 	}
 
 	notifier, botName := startTelegram(ctx, log, cfg, backend{pgStore, chStore})
+	if cfg.PprofAddr != "" {
+		go servePprof(log, cfg.PprofAddr)
+	}
 
 	queue := pipeline.NewQueue(cfg.QueueSize)
 	worker := &pipeline.Worker{
@@ -208,6 +218,7 @@ func serve(log *slog.Logger, cfg Config) error {
 		BatchSize:  cfg.BatchSize,
 		FlushEvery: time.Second,
 		Retries:    4,
+		Workers:    cfg.Workers,
 		OnFlush: func(ctx context.Context, activity []pipeline.Activity) {
 			for _, a := range activity {
 				switch {
@@ -307,9 +318,23 @@ func startTelegram(ctx context.Context, log *slog.Logger, cfg Config, st notify.
 	}
 	n := notify.New(st, tg, cfg.PublicURL, log)
 	go n.Run(ctx)
-	go tg.Poll(ctx, func(err error) { log.Warn("Telegram: чтение сообщений боту", "err", err) })
+	go tg.Poll(ctx,
+		func(chatID string) { log.Info("Telegram: боту написали /start", "chat", chatID) },
+		func(err error) { log.Warn("Telegram: чтение сообщений боту", "err", err) })
 	log.Info("уведомления в Telegram включены", "bot", "@"+name)
 	return n, name
+}
+
+func servePprof(log *slog.Logger, addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	log.Info("профилировщик", "addr", addr)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if err := srv.ListenAndServe(); err != nil {
+		log.Error("профилировщик", "err", err)
+	}
 }
 
 // apiNotifier: nil-указатель в интерфейсе — не nil, поэтому явно.

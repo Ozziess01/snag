@@ -100,8 +100,9 @@ func (t *Telegram) Username(ctx context.Context) (string, error) {
 }
 
 // Poll отвечает на /start и /chatid номером чата: так пользователь узнаёт,
-// что вписать в настройки проекта. Работает, пока жив контекст.
-func (t *Telegram) Poll(ctx context.Context, onError func(error)) {
+// что вписать в настройки проекта. onStart (может быть nil) узнаёт о
+// каждом таком чате — для лога. Работает, пока жив контекст.
+func (t *Telegram) Poll(ctx context.Context, onStart func(chatID string), onError func(error)) {
 	offset := 0
 	for ctx.Err() == nil {
 		var updates []struct {
@@ -144,6 +145,9 @@ func (t *Telegram) Poll(ctx context.Context, onError func(error)) {
 				continue
 			}
 			id := strconv.FormatInt(u.Message.Chat.ID, 10)
+			if onStart != nil {
+				onStart(id)
+			}
 			text := "Номер этого чата: <code>" + id + "</code>\n\nВставьте его в Snag: проект → «Уведомления» → «Добавить чат»."
 			if err := t.Send(ctx, id, text); err != nil {
 				onError(err)

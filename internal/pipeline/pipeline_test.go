@@ -172,17 +172,40 @@ func TestWorkerFlushesByTimer(t *testing.T) {
 	<-done
 }
 
+func TestSeveralWorkersWriteEverything(t *testing.T) {
+	q := NewQueue(1000)
+	issues, events := &fakeIssues{}, &fakeEvents{}
+	w := newWorker(q, issues, events)
+	w.Workers, w.BatchSize = 4, 7
+	done := make(chan struct{})
+	go func() { w.Run(context.Background()); close(done) }()
+	for i := 0; i < 300; i++ {
+		title := []string{"A", "B", "C"}[i%3]
+		for q.Accept(context.Background(), []ingest.Accepted{accepted(title, time.Now())}) != nil {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	q.Close()
+	<-done
+	if len(events.rows) != 300 || w.Stats.Written.Load() != 300 {
+		t.Fatalf("записано %d / %d, ждали 300", len(events.rows), w.Stats.Written.Load())
+	}
+	if len(issues.known) != 3 {
+		t.Fatalf("проблем %d, ждали 3", len(issues.known))
+	}
+}
+
 func TestQueueFull(t *testing.T) {
 	q := NewQueue(1)
-	if err := q.Accept(context.Background(), []ingest.Accepted{{}}); err != nil {
+	if err := q.Accept(context.Background(), []ingest.Accepted{accepted("E", time.Now())}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Accept(context.Background(), []ingest.Accepted{{}}); !errors.Is(err, ingest.ErrBusy) {
+	if err := q.Accept(context.Background(), []ingest.Accepted{accepted("E", time.Now())}); !errors.Is(err, ingest.ErrBusy) {
 		t.Fatalf("полная очередь: %v", err)
 	}
 	q.Close()
 	q.Close() // второй Close не паникует
-	if err := q.Accept(context.Background(), []ingest.Accepted{{}}); !errors.Is(err, ingest.ErrBusy) {
+	if err := q.Accept(context.Background(), []ingest.Accepted{accepted("E", time.Now())}); !errors.Is(err, ingest.ErrBusy) {
 		t.Fatalf("закрытая очередь: %v", err)
 	}
 }
