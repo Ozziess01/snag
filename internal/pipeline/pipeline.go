@@ -246,7 +246,7 @@ func toRow(a ingest.Accepted, issueID uint64) store.Event {
 		Culprit:     e.Culprit(),
 		UserKey:     userKey(e.User, a.ClientIP),
 		Tags:        event.DerivedTags(e),
-		Data:        string(a.Raw),
+		Data:        string(event.Scrub(a.Raw)),
 	}
 }
 
