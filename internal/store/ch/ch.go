@@ -8,10 +8,11 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"github.com/Ozziess01/snag/internal/store"
 )
 
 //go:embed migrations/*.sql
@@ -71,29 +72,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// Event — строка таблицы events.
-type Event struct {
-	ProjectID   uint64
-	IssueID     uint64
-	EventID     string // 32 hex
-	Timestamp   time.Time
-	ReceivedAt  time.Time
-	Level       string
-	Platform    string
-	Environment string
-	Release     string
-	SDK         string
-	Title       string
-	Culprit     string
-	UserKey     string
-	Tags        map[string]string
-	Data        string
-}
-
 // InsertEvents пишет пачку одной вставкой. ClickHouse любит редкие большие
 // вставки: каждая создаёт на диске «кусок», и тысячи вставок по строке
 // быстро упираются в «too many parts».
-func (s *Store) InsertEvents(ctx context.Context, events []Event) error {
+func (s *Store) InsertEvents(ctx context.Context, events []store.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -118,34 +100,6 @@ func (s *Store) InsertEvents(ctx context.Context, events []Event) error {
 		return fmt.Errorf("ch: вставка %d событий: %w", len(events), err)
 	}
 	return nil
-}
-
-// IssueStats — счётчики проблемы за период из почасовой таблицы.
-type IssueStats struct {
-	IssueID uint64
-	Events  uint64
-	Users   uint64
-}
-
-func (s *Store) IssueStats(ctx context.Context, projectID uint64, since time.Time) (map[uint64]IssueStats, error) {
-	rows, err := s.conn.Query(ctx, `
-		SELECT issue_id, sum(events), uniqMerge(users)
-		FROM issue_hourly
-		WHERE project_id = ? AND hour >= toStartOfHour(?)
-		GROUP BY issue_id`, projectID, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[uint64]IssueStats{}
-	for rows.Next() {
-		var st IssueStats
-		if err := rows.Scan(&st.IssueID, &st.Events, &st.Users); err != nil {
-			return nil, err
-		}
-		out[st.IssueID] = st
-	}
-	return out, rows.Err()
 }
 
 // uuidString: 9ec79c33ec99… → 9ec79c33-ec99-…, как ждёт тип UUID.

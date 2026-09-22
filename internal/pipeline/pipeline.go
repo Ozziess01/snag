@@ -19,8 +19,7 @@ import (
 	"github.com/Ozziess01/snag/internal/event"
 	"github.com/Ozziess01/snag/internal/grouping"
 	"github.com/Ozziess01/snag/internal/ingest"
-	"github.com/Ozziess01/snag/internal/store/ch"
-	"github.com/Ozziess01/snag/internal/store/pg"
+	"github.com/Ozziess01/snag/internal/store"
 )
 
 // ---------- очередь ----------
@@ -64,16 +63,16 @@ func (q *Queue) Len() int { return len(q.ch) }
 // ---------- воркер ----------
 
 type IssueStore interface {
-	UpsertIssues(ctx context.Context, deltas []pg.IssueDelta) ([]pg.IssueResult, error)
+	UpsertIssues(ctx context.Context, deltas []store.IssueDelta) ([]store.IssueResult, error)
 }
 
 type EventStore interface {
-	InsertEvents(ctx context.Context, events []ch.Event) error
+	InsertEvents(ctx context.Context, events []store.Event) error
 }
 
 // Change — новая или вернувшаяся проблема: повод для уведомления.
 type Change struct {
-	Issue pg.IssueResult
+	Issue store.IssueResult
 	Event *event.Event
 }
 
@@ -133,7 +132,7 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 	// 1. Группировка и сводка по проблемам.
 	type key struct{ project, fp uint64 }
 	groups := make([]grouping.Result, len(batch))
-	deltas := map[key]*pg.IssueDelta{}
+	deltas := map[key]*store.IssueDelta{}
 	firstEvent := map[key]*event.Event{}
 	for i, a := range batch {
 		g := grouping.Compute(a.Event)
@@ -142,7 +141,7 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 		ts := a.Event.Timestamp.Time
 		d, ok := deltas[k]
 		if !ok {
-			d = &pg.IssueDelta{ProjectID: a.ProjectID, Fingerprint: g.Hash, Kind: g.Kind, FirstSeen: ts, LastSeen: ts}
+			d = &store.IssueDelta{ProjectID: a.ProjectID, Fingerprint: g.Hash, Kind: g.Kind, FirstSeen: ts, LastSeen: ts}
 			deltas[k] = d
 			firstEvent[k] = a.Event
 		}
@@ -156,13 +155,13 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 			d.Title, d.Culprit, d.Level, d.Platform = a.Event.Title(), a.Event.Culprit(), a.Event.Level, a.Event.Platform
 		}
 	}
-	list := make([]pg.IssueDelta, 0, len(deltas))
+	list := make([]store.IssueDelta, 0, len(deltas))
 	for _, d := range deltas {
 		list = append(list, *d)
 	}
 
 	// 2. Проблемы в Postgres: нужны их id для событий.
-	var results []pg.IssueResult
+	var results []store.IssueResult
 	err := w.retry(ctx, "postgres", func() error {
 		var err error
 		results, err = w.Issues.UpsertIssues(ctx, list)
@@ -183,7 +182,7 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 	}
 
 	// 3. События в ClickHouse.
-	rows := make([]ch.Event, len(batch))
+	rows := make([]store.Event, len(batch))
 	for i, a := range batch {
 		rows[i] = toRow(a, ids[key{a.ProjectID, groups[i].Hash}])
 	}
@@ -226,17 +225,13 @@ func (w *Worker) drop(batch []ingest.Accepted, store string, err error) {
 	w.Log.Error("пачка событий потеряна", "store", store, "events", len(batch), "err", err)
 }
 
-func toRow(a ingest.Accepted, issueID uint64) ch.Event {
+func toRow(a ingest.Accepted, issueID uint64) store.Event {
 	e := a.Event
-	tags := make(map[string]string, len(e.Tags))
-	for _, kv := range e.Tags {
-		tags[kv[0]] = kv[1]
-	}
 	sdk := ""
 	if e.SDK != nil {
 		sdk = e.SDK.Name
 	}
-	return ch.Event{
+	return store.Event{
 		ProjectID:   a.ProjectID,
 		IssueID:     issueID,
 		EventID:     e.EventID,
@@ -250,7 +245,7 @@ func toRow(a ingest.Accepted, issueID uint64) ch.Event {
 		Title:       e.Title(),
 		Culprit:     e.Culprit(),
 		UserKey:     userKey(e.User, a.ClientIP),
-		Tags:        tags,
+		Tags:        event.DerivedTags(e),
 		Data:        string(a.Raw),
 	}
 }

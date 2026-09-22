@@ -1,4 +1,5 @@
-// Package pg — хранилище в Postgres: проекты, ключи DSN и проблемы.
+// Package pg — хранилище в Postgres: проекты, ключи DSN, проблемы,
+// пользователи и сессии.
 package pg
 
 import (
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Ozziess01/snag/internal/ingest"
+	"github.com/Ozziess01/snag/internal/store"
 )
 
 //go:embed migrations/*.sql
@@ -90,25 +92,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 // ---------- проекты ----------
 
-type NewProject struct {
-	ID        uint64
-	Slug      string
-	PublicKey string
-}
-
 var reSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 // CreateProject создаёт проект и первый ключ DSN.
-func (s *Store) CreateProject(ctx context.Context, name string) (NewProject, error) {
+func (s *Store) CreateProject(ctx context.Context, name string) (store.Project, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return NewProject{}, errors.New("pg: пустое имя проекта")
+		return store.Project{}, errors.New("pg: пустое имя проекта")
 	}
 	slug := strings.Trim(reSlug.ReplaceAllString(translit(strings.ToLower(name)), "-"), "-")
 	if slug == "" {
 		slug = "project"
 	}
-	p := NewProject{PublicKey: randomKey()}
+	p := store.Project{Name: name, PublicKey: randomKey(), AllowedOrigins: []string{}, CreatedAt: time.Now().UTC()}
+	var id int64
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		// Занятый slug не трогаем: пробуем тот же с коротким случайным хвостом.
 		for attempt := 0; p.ID == 0; attempt++ {
@@ -118,7 +115,8 @@ func (s *Store) CreateProject(ctx context.Context, name string) (NewProject, err
 			}
 			err := tx.QueryRow(ctx,
 				`INSERT INTO projects (name, slug) VALUES ($1, $2) ON CONFLICT (slug) DO NOTHING RETURNING id, slug`,
-				name, candidate).Scan(&p.ID, &p.Slug)
+				name, candidate).Scan(&id, &p.Slug)
+			p.ID = uint64(id)
 			switch {
 			case errors.Is(err, pgx.ErrNoRows) && attempt < 5:
 				continue
@@ -126,7 +124,7 @@ func (s *Store) CreateProject(ctx context.Context, name string) (NewProject, err
 				return err
 			}
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO project_keys (public_key, project_id) VALUES ($1, $2)`, p.PublicKey, p.ID)
+		_, err := tx.Exec(ctx, `INSERT INTO project_keys (public_key, project_id) VALUES ($1, $2)`, p.PublicKey, id)
 		return err
 	})
 	return p, err
@@ -162,28 +160,6 @@ func (s *Store) ByKey(ctx context.Context, key string) (ingest.Project, error) {
 
 // ---------- проблемы ----------
 
-// IssueDelta — что пачка событий меняет в одной проблеме.
-type IssueDelta struct {
-	ProjectID   uint64
-	Fingerprint uint64
-	Kind        string
-	Title       string
-	Culprit     string
-	Level       string
-	Platform    string
-	FirstSeen   time.Time
-	LastSeen    time.Time
-	Count       int64
-}
-
-type IssueResult struct {
-	ID          uint64
-	ProjectID   uint64
-	Fingerprint uint64
-	Created     bool // проблема появилась впервые
-	Regressed   bool // была решена, но случилась снова
-}
-
 // UpsertIssues создаёт или обновляет проблемы одним запросом на всю пачку.
 //
 // Два приёма Postgres:
@@ -194,7 +170,7 @@ type IssueResult struct {
 //
 // Решённая проблема переоткрывается, только если событие случилось позже
 // решения: запоздавший отчёт из прошлого не считается регрессией.
-func (s *Store) UpsertIssues(ctx context.Context, deltas []IssueDelta) ([]IssueResult, error) {
+func (s *Store) UpsertIssues(ctx context.Context, deltas []store.IssueDelta) ([]store.IssueResult, error) {
 	if len(deltas) == 0 {
 		return nil, nil
 	}
@@ -244,9 +220,9 @@ func (s *Store) UpsertIssues(ctx context.Context, deltas []IssueDelta) ([]IssueR
 	if err != nil {
 		return nil, fmt.Errorf("pg: upsert issues: %w", err)
 	}
-	out := make([]IssueResult, 0, n)
+	out := make([]store.IssueResult, 0, n)
 	for rows.Next() {
-		var r IssueResult
+		var r store.IssueResult
 		var id, project, fp int64
 		if err := rows.Scan(&id, &project, &fp, &r.Created, &r.Regressed); err != nil {
 			return nil, err
@@ -259,6 +235,9 @@ func (s *Store) UpsertIssues(ctx context.Context, deltas []IssueDelta) ([]IssueR
 
 // SetIssueStatus меняет статус проблемы (решена, игнорируется, открыта).
 func (s *Store) SetIssueStatus(ctx context.Context, issueID uint64, status string) error {
+	if !store.ValidStatus(status) {
+		return fmt.Errorf("pg: неизвестный статус %q", status)
+	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE issues SET status = $2,
 		       resolved_at = CASE WHEN $2 = 'resolved' THEN now() ELSE NULL END
@@ -267,7 +246,7 @@ func (s *Store) SetIssueStatus(ctx context.Context, issueID uint64, status strin
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("pg: проблема %d не найдена", issueID)
+		return store.ErrNotFound
 	}
 	return nil
 }

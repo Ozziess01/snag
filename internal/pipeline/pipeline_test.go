@@ -11,19 +11,18 @@ import (
 
 	"github.com/Ozziess01/snag/internal/event"
 	"github.com/Ozziess01/snag/internal/ingest"
-	"github.com/Ozziess01/snag/internal/store/ch"
-	"github.com/Ozziess01/snag/internal/store/pg"
+	"github.com/Ozziess01/snag/internal/store"
 )
 
 type fakeIssues struct {
 	mu        sync.Mutex
-	calls     [][]pg.IssueDelta
+	calls     [][]store.IssueDelta
 	failTimes int
 	nextID    uint64
 	known     map[uint64]uint64 // fingerprint → id
 }
 
-func (f *fakeIssues) UpsertIssues(_ context.Context, deltas []pg.IssueDelta) ([]pg.IssueResult, error) {
+func (f *fakeIssues) UpsertIssues(_ context.Context, deltas []store.IssueDelta) ([]store.IssueResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failTimes > 0 {
@@ -34,7 +33,7 @@ func (f *fakeIssues) UpsertIssues(_ context.Context, deltas []pg.IssueDelta) ([]
 	if f.known == nil {
 		f.known = map[uint64]uint64{}
 	}
-	var out []pg.IssueResult
+	var out []store.IssueResult
 	for _, d := range deltas {
 		id, ok := f.known[d.Fingerprint]
 		if !ok {
@@ -42,18 +41,18 @@ func (f *fakeIssues) UpsertIssues(_ context.Context, deltas []pg.IssueDelta) ([]
 			id = f.nextID
 			f.known[d.Fingerprint] = id
 		}
-		out = append(out, pg.IssueResult{ID: id, ProjectID: d.ProjectID, Fingerprint: d.Fingerprint, Created: !ok})
+		out = append(out, store.IssueResult{ID: id, ProjectID: d.ProjectID, Fingerprint: d.Fingerprint, Created: !ok})
 	}
 	return out, nil
 }
 
 type fakeEvents struct {
 	mu   sync.Mutex
-	rows []ch.Event
+	rows []store.Event
 	fail bool
 }
 
-func (f *fakeEvents) InsertEvents(_ context.Context, rows []ch.Event) error {
+func (f *fakeEvents) InsertEvents(_ context.Context, rows []store.Event) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail {
