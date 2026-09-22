@@ -18,14 +18,16 @@ import (
 )
 
 type Store struct {
-	mu       sync.RWMutex
-	projects []store.Project
-	keys     map[string]uint64
-	issues   []*store.Issue
-	byFP     map[[2]uint64]*store.Issue
-	events   []store.Event
-	users    map[string]memUser
-	sessions map[string]uint64
+	mu          sync.RWMutex
+	projects    []store.Project
+	keys        map[string]uint64
+	issues      []*store.Issue
+	byFP        map[[2]uint64]*store.Issue
+	events      []store.Event
+	users       map[string]memUser
+	sessions    map[string]uint64
+	channels    []store.Channel
+	nextChannel uint64
 	// MaxEvents — сколько событий держать; самые старые вытесняются.
 	MaxEvents int
 }
@@ -379,4 +381,55 @@ func (s *Store) Logout(_ context.Context, token string) error {
 	defer s.mu.Unlock()
 	delete(s.sessions, token)
 	return nil
+}
+
+// ---------- каналы уведомлений ----------
+
+func (s *Store) Channels(_ context.Context, projectID uint64) ([]store.Channel, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []store.Channel
+	for _, c := range s.channels {
+		if c.ProjectID == projectID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) SaveChannel(_ context.Context, c store.Channel) (store.Channel, error) {
+	if err := c.Validate(); err != nil {
+		return c, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, old := range s.channels {
+		if c.ID != 0 && old.ID == c.ID && old.ProjectID == c.ProjectID {
+			c.CreatedAt = old.CreatedAt
+			s.channels[i] = c
+			return c, nil
+		}
+		if c.ID == 0 && old.ProjectID == c.ProjectID && old.Target == c.Target {
+			return c, store.ErrDuplicate
+		}
+	}
+	if c.ID != 0 {
+		return c, store.ErrNotFound
+	}
+	s.nextChannel++
+	c.ID, c.CreatedAt = s.nextChannel, time.Now().UTC()
+	s.channels = append(s.channels, c)
+	return c, nil
+}
+
+func (s *Store) DeleteChannel(_ context.Context, projectID, id uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.channels {
+		if c.ID == id && c.ProjectID == projectID {
+			s.channels = append(s.channels[:i], s.channels[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }

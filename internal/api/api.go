@@ -37,6 +37,8 @@ type Backend interface {
 	IssueEvents(ctx context.Context, projectID, issueID uint64, before time.Time, limit int) ([]store.EventSummary, error)
 	Event(ctx context.Context, projectID, issueID uint64, eventID string) (store.Event, error)
 	Neighbors(ctx context.Context, projectID, issueID uint64, ev store.Event) (older, newer string, err error)
+
+	ChannelStore
 }
 
 type Auth interface {
@@ -53,6 +55,8 @@ type API struct {
 	Now          func() time.Time
 	PublicURL    string // адрес приёма для DSN: https://snag.example
 	SecureCookie bool
+	Notifier     Notifier // nil — Telegram не настроен
+	BotName      string   // имя бота для подсказки в интерфейсе
 
 	limiter loginLimiter
 }
@@ -81,6 +85,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/issues/{issue}", a.authed(a.updateIssue))
 	mux.HandleFunc("GET /api/v1/issues/{issue}/events", a.authed(a.listEvents))
 	mux.HandleFunc("GET /api/v1/issues/{issue}/events/{event}", a.authed(a.getEvent))
+	a.registerChannels(mux)
 }
 
 // ---------- вход ----------

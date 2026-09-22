@@ -89,8 +89,8 @@ func TestWorkerGroupsAndWrites(t *testing.T) {
 	q := NewQueue(10)
 	issues, events := &fakeIssues{}, &fakeEvents{}
 	w := newWorker(q, issues, events)
-	var changes []Change
-	w.OnChange = func(_ context.Context, c []Change) { changes = append(changes, c...) }
+	var activity []Activity
+	w.OnFlush = func(_ context.Context, a []Activity) { activity = append(activity, a...) }
 
 	t0 := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
 	_ = q.Accept(context.Background(), []ingest.Accepted{accepted("TypeError", t0), accepted("TypeError", t0.Add(time.Second))})
@@ -115,8 +115,16 @@ func TestWorkerGroupsAndWrites(t *testing.T) {
 	if events.rows[0].UserKey != "id:42" || events.rows[0].EventID == "" {
 		t.Errorf("строка события: %+v", events.rows[0])
 	}
-	if len(changes) != 2 || w.Stats.Written.Load() != 3 {
-		t.Errorf("новых проблем %d, записано %d", len(changes), w.Stats.Written.Load())
+	if len(activity) != 2 || w.Stats.Written.Load() != 3 {
+		t.Fatalf("проблем в сводке %d, записано %d", len(activity), w.Stats.Written.Load())
+	}
+	for _, a := range activity {
+		if !a.Issue.Created || a.Event == nil {
+			t.Errorf("обе проблемы новые и с событием: %+v", a)
+		}
+		if a.Event.Title() == "TypeError: v" && (a.Count != 2 || !a.Event.Timestamp.Equal(t0.Add(time.Second))) {
+			t.Errorf("TypeError: ждали 2 события и самое свежее, получили %d и %v", a.Count, a.Event.Timestamp)
+		}
 	}
 }
 

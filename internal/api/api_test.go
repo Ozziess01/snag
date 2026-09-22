@@ -26,6 +26,7 @@ type env struct {
 	mux    *http.ServeMux
 	store  *mem.Store
 	worker *pipeline.Worker
+	api    *API
 	cookie *http.Cookie
 }
 
@@ -46,7 +47,7 @@ func newEnv(t *testing.T, withAuth bool) *env {
 		a.Auth = st
 	}
 	a.Register(mux)
-	return &env{t: t, mux: mux, store: st, worker: w}
+	return &env{t: t, mux: mux, store: st, worker: w, api: a}
 }
 
 func (e *env) do(method, path string, body any) (int, map[string]any) {

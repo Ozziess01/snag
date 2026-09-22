@@ -53,9 +53,14 @@ export default function IssuesPage({ projectId, query, projects }: { projectId: 
           <div className="crumbs">Проблемы</div>
           <h1>{project?.name ?? 'Проект'}</h1>
         </div>
-        <a className="btn btn--ghost" href={`#/p/${projectId}/setup`}>
-          Подключение
-        </a>
+        <div className="page__actions">
+          <a className="btn btn--ghost" href={`#/p/${projectId}/alerts`}>
+            Уведомления
+          </a>
+          <a className="btn btn--ghost" href={`#/p/${projectId}/setup`}>
+            Подключение
+          </a>
+        </div>
       </header>
 
       <div className="toolbar">

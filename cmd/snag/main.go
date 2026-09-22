@@ -25,6 +25,7 @@ import (
 
 	"github.com/Ozziess01/snag/internal/api"
 	"github.com/Ozziess01/snag/internal/ingest"
+	"github.com/Ozziess01/snag/internal/notify"
 	"github.com/Ozziess01/snag/internal/pipeline"
 	"github.com/Ozziess01/snag/internal/store/ch"
 	"github.com/Ozziess01/snag/internal/store/pg"
@@ -42,6 +43,11 @@ type Config struct {
 	// удобно для docker compose и Codespaces.
 	AdminEmail    string
 	AdminPassword string
+	// Токен бота Telegram (@BotFather). Пусто — уведомления выключены.
+	TelegramToken string
+	// Адрес Bot API: по умолчанию api.telegram.org, можно свой
+	// (self-hosted telegram-bot-api) или фейковый для проверки.
+	TelegramAPI string
 }
 
 func config() Config {
@@ -55,6 +61,8 @@ func config() Config {
 
 		AdminEmail:    os.Getenv("SNAG_ADMIN_EMAIL"),
 		AdminPassword: os.Getenv("SNAG_ADMIN_PASSWORD"),
+		TelegramToken: os.Getenv("SNAG_TELEGRAM_TOKEN"),
+		TelegramAPI:   os.Getenv("SNAG_TELEGRAM_API"),
 	}
 }
 
@@ -189,6 +197,8 @@ func serve(log *slog.Logger, cfg Config) error {
 		log.Warn("пользователей нет: создайте первого командой snag user create <email>")
 	}
 
+	notifier, botName := startTelegram(ctx, log, cfg, backend{pgStore, chStore})
+
 	queue := pipeline.NewQueue(cfg.QueueSize)
 	worker := &pipeline.Worker{
 		Queue:      queue,
@@ -198,13 +208,17 @@ func serve(log *slog.Logger, cfg Config) error {
 		BatchSize:  cfg.BatchSize,
 		FlushEvery: time.Second,
 		Retries:    4,
-		OnChange: func(_ context.Context, changes []pipeline.Change) {
-			for _, c := range changes {
-				what := "новая проблема"
-				if c.Issue.Regressed {
-					what = "проблема вернулась"
+		OnFlush: func(ctx context.Context, activity []pipeline.Activity) {
+			for _, a := range activity {
+				switch {
+				case a.Issue.Created:
+					log.Info("новая проблема", "project", a.Issue.ProjectID, "issue", a.Issue.ID, "title", a.Event.Title())
+				case a.Issue.Regressed:
+					log.Info("проблема вернулась", "project", a.Issue.ProjectID, "issue", a.Issue.ID, "title", a.Event.Title())
 				}
-				log.Info(what, "project", c.Issue.ProjectID, "issue", c.Issue.ID, "title", c.Event.Title())
+			}
+			if notifier != nil {
+				notifier.Handle(ctx, activity)
 			}
 		},
 	}
@@ -230,6 +244,8 @@ func serve(log *slog.Logger, cfg Config) error {
 		Log:          log,
 		PublicURL:    cfg.PublicURL,
 		SecureCookie: strings.HasPrefix(cfg.PublicURL, "https://"),
+		Notifier:     apiNotifier(notifier),
+		BotName:      botName,
 	}).Register(mux)
 	mux.Handle("GET /", web.Handler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -272,6 +288,36 @@ func serve(log *slog.Logger, cfg Config) error {
 	}
 	log.Info("остановлен", "written", worker.Stats.Written.Load(), "dropped", worker.Stats.Dropped.Load())
 	return nil
+}
+
+// startTelegram включает уведомления, если задан токен бота: проверяет
+// токен (getMe), запускает отправку в фоне и ответы бота на /start.
+func startTelegram(ctx context.Context, log *slog.Logger, cfg Config, st notify.Store) (*notify.Notifier, string) {
+	if cfg.TelegramToken == "" {
+		log.Info("уведомления в Telegram выключены: SNAG_TELEGRAM_TOKEN не задан")
+		return nil, ""
+	}
+	tg := &notify.Telegram{Token: cfg.TelegramToken, BaseURL: strings.TrimRight(cfg.TelegramAPI, "/")}
+	check, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	name, err := tg.Username(check)
+	if err != nil {
+		log.Error("Telegram: токен не подошёл, уведомления выключены", "err", err)
+		return nil, ""
+	}
+	n := notify.New(st, tg, cfg.PublicURL, log)
+	go n.Run(ctx)
+	go tg.Poll(ctx, func(err error) { log.Warn("Telegram: чтение сообщений боту", "err", err) })
+	log.Info("уведомления в Telegram включены", "bot", "@"+name)
+	return n, name
+}
+
+// apiNotifier: nil-указатель в интерфейсе — не nil, поэтому явно.
+func apiNotifier(n *notify.Notifier) api.Notifier {
+	if n == nil {
+		return nil
+	}
+	return n
 }
 
 func env(key, def string) string {

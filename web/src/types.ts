@@ -128,6 +128,18 @@ export interface EventDetail {
   raw: unknown;
 }
 
+export interface Channel {
+  id: number;
+  project_id: number;
+  kind: 'telegram';
+  target: string;
+  on_new: boolean;
+  on_regression: boolean;
+  spike_threshold: number;
+  spike_window: number;
+  created_at: string;
+}
+
 export interface EventSummary {
   id: string;
   timestamp: string;

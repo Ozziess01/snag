@@ -8,6 +8,7 @@ import IssuesPage from './components/IssuesPage';
 import IssuePage from './components/IssuePage';
 import SetupPage from './components/SetupPage';
 import NewProject from './components/NewProject';
+import AlertsPage from './components/AlertsPage';
 
 type Session = { user: User; demo: boolean } | null | 'loading';
 
@@ -66,7 +67,7 @@ export default function App() {
   }
 
   const currentProject =
-    route.name === 'issues' || route.name === 'setup' ? route.projectId : null;
+    route.name === 'issues' || route.name === 'setup' || route.name === 'alerts' ? route.projectId : null;
 
   // Во фрейме демо боковое меню лишнее: проект один, место нужнее списку.
   const embedded = isEmbeddedDemo();
@@ -117,6 +118,7 @@ export default function App() {
         )}
         {route.name === 'issue' && <IssuePage key={route.issueId} issueId={route.issueId} eventId={route.eventId} onChange={loadProjects} />}
         {route.name === 'setup' && <SetupPage projectId={route.projectId} projects={projects} />}
+        {route.name === 'alerts' && <AlertsPage projectId={route.projectId} projects={projects} demo={session.demo} />}
         {route.name === 'newProject' && (
           <NewProject
             onCreated={async (p) => {

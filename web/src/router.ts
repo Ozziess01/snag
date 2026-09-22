@@ -8,6 +8,7 @@ export type Route =
   | { name: 'home' }
   | { name: 'issues'; projectId: number; query: URLSearchParams }
   | { name: 'setup'; projectId: number }
+  | { name: 'alerts'; projectId: number }
   | { name: 'newProject' }
   | { name: 'issue'; issueId: number; eventId: string };
 
@@ -21,6 +22,7 @@ export function parse(hash: string): Route {
   if (parts[0] === 'projects' && parts[1] === 'new') return { name: 'newProject' };
   if (parts[0] === 'p' && num(parts[1])) {
     if (parts[2] === 'setup') return { name: 'setup', projectId: num(parts[1]) };
+    if (parts[2] === 'alerts') return { name: 'alerts', projectId: num(parts[1]) };
     return { name: 'issues', projectId: num(parts[1]), query };
   }
   if (parts[0] === 'issues' && num(parts[1])) {

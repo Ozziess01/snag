@@ -224,6 +224,41 @@ func TestEventsAndStats(t *testing.T) {
 	}
 }
 
+func TestChannels(t *testing.T) {
+	p, _ := stores(t)
+	ctx := context.Background()
+	proj, err := p.CreateProject(ctx, "channels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := p.SaveChannel(ctx, store.Channel{ProjectID: proj.ID, Target: "-100200", OnNew: true, SpikeThreshold: 10})
+	if err != nil || c.ID == 0 || c.SpikeWindow != 5 {
+		t.Fatalf("создание: %+v %v", c, err)
+	}
+	if _, err := p.SaveChannel(ctx, store.Channel{ProjectID: proj.ID, Target: "-100200"}); !errors.Is(err, store.ErrDuplicate) {
+		t.Fatalf("дубль: %v", err)
+	}
+	var bad store.ValidationError
+	if _, err := p.SaveChannel(ctx, store.Channel{ProjectID: proj.ID, Target: "не чат"}); !errors.As(err, &bad) {
+		t.Fatalf("проверка: %v", err)
+	}
+	c.OnRegression, c.SpikeWindow = true, 15
+	if _, err := p.SaveChannel(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := p.Channels(ctx, proj.ID)
+	if len(list) != 1 || !list[0].OnRegression || list[0].SpikeWindow != 15 {
+		t.Fatalf("после изменения: %+v", list)
+	}
+	other, _ := p.CreateProject(ctx, "other")
+	if err := p.DeleteChannel(ctx, other.ID, c.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("канал чужого проекта не удаляется: %v", err)
+	}
+	if err := p.DeleteChannel(ctx, proj.ID, c.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUsersAndSessions(t *testing.T) {
 	p, _ := stores(t)
 	ctx := context.Background()

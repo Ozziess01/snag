@@ -70,17 +70,20 @@ type EventStore interface {
 	InsertEvents(ctx context.Context, events []store.Event) error
 }
 
-// Change — новая или вернувшаяся проблема: повод для уведомления.
-type Change struct {
+// Activity — что пачка сделала с одной проблемой: сколько событий пришло,
+// появилась ли проблема впервые или вернулась. По этому уведомления
+// решают, писать ли в Telegram (в том числе про всплески).
+type Activity struct {
 	Issue store.IssueResult
-	Event *event.Event
+	Event *event.Event // самое свежее событие проблемы в пачке
+	Count int
 }
 
 type Worker struct {
 	Queue      *Queue
 	Issues     IssueStore
 	Events     EventStore
-	OnChange   func(ctx context.Context, changes []Change) // может быть nil
+	OnFlush    func(ctx context.Context, activity []Activity) // может быть nil
 	Log        *slog.Logger
 	BatchSize  int
 	FlushEvery time.Duration
@@ -133,7 +136,7 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 	type key struct{ project, fp uint64 }
 	groups := make([]grouping.Result, len(batch))
 	deltas := map[key]*store.IssueDelta{}
-	firstEvent := map[key]*event.Event{}
+	lastEvent := map[key]*event.Event{}
 	for i, a := range batch {
 		g := grouping.Compute(a.Event)
 		groups[i] = g
@@ -143,7 +146,6 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 		if !ok {
 			d = &store.IssueDelta{ProjectID: a.ProjectID, Fingerprint: g.Hash, Kind: g.Kind, FirstSeen: ts, LastSeen: ts}
 			deltas[k] = d
-			firstEvent[k] = a.Event
 		}
 		d.Count++
 		if ts.Before(d.FirstSeen) {
@@ -153,6 +155,7 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 			// Заголовок и уровень берём у самого свежего события.
 			d.LastSeen = ts
 			d.Title, d.Culprit, d.Level, d.Platform = a.Event.Title(), a.Event.Culprit(), a.Event.Level, a.Event.Platform
+			lastEvent[k] = a.Event
 		}
 	}
 	list := make([]store.IssueDelta, 0, len(deltas))
@@ -172,13 +175,11 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 		return
 	}
 	ids := make(map[key]uint64, len(results))
-	var changes []Change
+	activity := make([]Activity, 0, len(results))
 	for _, r := range results {
 		k := key{r.ProjectID, r.Fingerprint}
 		ids[k] = r.ID
-		if r.Created || r.Regressed {
-			changes = append(changes, Change{Issue: r, Event: firstEvent[k]})
-		}
+		activity = append(activity, Activity{Issue: r, Event: lastEvent[k], Count: int(deltas[k].Count)})
 	}
 
 	// 3. События в ClickHouse.
@@ -192,8 +193,8 @@ func (w *Worker) flush(ctx context.Context, batch []ingest.Accepted) {
 	}
 	w.Stats.Written.Add(int64(len(batch)))
 
-	if w.OnChange != nil && len(changes) > 0 {
-		w.OnChange(ctx, changes)
+	if w.OnFlush != nil {
+		w.OnFlush(ctx, activity)
 	}
 }
 
