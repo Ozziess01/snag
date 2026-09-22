@@ -12,6 +12,7 @@ Self-hosted сервис сбора ошибок, совместимый с SDK 
 |---|---|
 | ![Проблема](docs/screenshots/issue.jpg) | ![Событие со стеком](docs/screenshots/event.jpg) |
 | ![Уведомления](docs/screenshots/alerts.jpg) | ![Подключение проекта](docs/screenshots/setup.jpg) |
+| [![Демо в браузере](docs/screenshots/demo.jpg)](https://fedorov-n.ru/snag-demo/) | |
 
 ## Что умеет
 
