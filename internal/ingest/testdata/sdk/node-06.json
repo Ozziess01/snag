@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "path": "/api/1/envelope/",
+  "query": "?sentry_version=7&sentry_key=node&sentry_client=sentry.javascript.node%2F10.75.2",
+  "headers": {
+    "content-encoding": "gzip",
+    "user-agent": "sentry.javascript.node/10.75.2"
+  }
+}

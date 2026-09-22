@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "path": "/api/1/envelope/",
+  "query": "",
+  "headers": {
+    "content-type": "application/x-sentry-envelope",
+    "x-sentry-auth": "Sentry sentry_version=7, sentry_client=sentry.go/0.49.0, sentry_key=gosdk",
+    "user-agent": "sentry.go/0.49.0"
+  }
+}

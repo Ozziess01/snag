@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>capture: browser</title>
+<script src="https://browser.sentry-cdn.com/10.75.2/bundle.min.js" crossorigin="anonymous"></script>
+<script>
+  Sentry.init({ dsn: 'http://browser@127.0.0.1:9911/1', release: 'demo@1.2.0', environment: 'test' });
+  Sentry.setUser({ id: 42 });
+  Sentry.setTag('feature', 'checkout');
+
+  function renderCart(cart) {
+    return cart.items.length;
+  }
+
+  // 1. Необработанная ошибка: ловит глобальный обработчик SDK.
+  setTimeout(function () { renderCart(undefined); }, 10);
+
+  // 2. Сообщение.
+  Sentry.captureMessage('Order 17 failed', 'warning');
+
+  // 3. Необработанный reject промиса.
+  Promise.reject(new TypeError('сеть недоступна'));
+</script>
+</head>
+<body>capture</body>
+</html>

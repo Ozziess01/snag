@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "path": "/api/1/envelope/",
+  "query": "?sentry_version=7&sentry_key=browser&sentry_client=sentry.javascript.browser%2F10.75.2",
+  "headers": {
+    "content-type": "text/plain;charset=UTF-8",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+    "origin": "http://127.0.0.1:9912"
+  }
+}

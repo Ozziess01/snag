@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "path": "/api/1/envelope/",
+  "query": "",
+  "headers": {
+    "content-type": "application/x-sentry-envelope",
+    "content-encoding": "gzip",
+    "x-sentry-auth": "Sentry sentry_key=python, sentry_version=7, sentry_client=sentry.python/2.70.0",
+    "user-agent": "sentry.python/2.70.0"
+  }
+}
