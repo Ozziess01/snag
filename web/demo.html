@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Snag — демо в браузере</title>
+<meta name="description" content="Снаг, сервис сбора ошибок, совместимый с SDK Sentry. Сломайте магазин слева — ошибка появится справа. Всё работает в вашем браузере через WebAssembly.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ff5b45'/%3E%3Cpath d='M10 11h9a3 3 0 010 6h-6a3 3 0 000 6h9' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<script src="./wasm_exec.js"></script>
+<script type="module" src="./src/demo/boot.ts"></script>
+</head>
+<body>
+<header class="bar">
+  <a class="bar__logo" href="./">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M10 11h9a3 3 0 010 6h-6a3 3 0 000 6h9"/></svg>
+    snag <span class="bar__badge">демо</span>
+  </a>
+  <p class="bar__lead">Работает целиком в вашем браузере: без сервера и без регистрации.</p>
+  <nav class="bar__links">
+    <a href="https://github.com/Ozziess01/snag" target="_blank" rel="noopener">Код на GitHub</a>
+    <a href="https://fedorov-n.ru/">Портфолио</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="shop" aria-label="Демо-магазин">
+    <h1>Сломайте магазин</h1>
+    <p class="shop__lead">Каждая кнопка ломает его по-своему. Ошибку ловит официальный SDK Sentry, а принимает и показывает Snag: <span class="wide">справа</span><span class="narrow">ниже</span>.</p>
+
+    <div class="product">
+      <div class="product__img" aria-hidden="true"></div>
+      <div>
+        <div class="product__name">Кофемолка «Утро»</div>
+        <div class="product__price">7 990 ₽</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" data-action="cart" disabled>
+        <b>Добавить в корзину</b>
+        <span>Товара нет в каталоге → <code>TypeError</code>, которую никто не перехватил</span>
+      </button>
+      <button type="button" data-action="promo" disabled>
+        <b>Применить промокод</b>
+        <span>Промис без <code>catch</code> → необработанный reject</span>
+      </button>
+      <button type="button" data-action="pay" disabled>
+        <b>Оплатить</b>
+        <span>Шлюз ответил 502: ошибка перехвачена и отправлена с тегами</span>
+      </button>
+      <button type="button" data-action="many" disabled>
+        <b>Сломать 25 раз</b>
+        <span>Snag склеит одинаковые ошибки в одну проблему</span>
+      </button>
+    </div>
+
+    <p class="shop__status" id="status" role="status">Запускаем Snag…</p>
+
+    <details class="how">
+      <summary>Как это устроено</summary>
+      <ul>
+        <li>Snag написан на Go. Для демо тот же код приёма, группировки и API собран в WebAssembly и работает в этой вкладке.</li>
+        <li>SDK Sentry отправляет ошибки не по сети, а прямо в Snag внутри страницы. На сервере это обычный HTTP.</li>
+        <li>На настоящем сервере события лежат в ClickHouse, проблемы — в Postgres. Здесь всё в памяти вкладки и пропадёт при перезагрузке.</li>
+        <li>В истории уже есть ошибки выдуманного магазина за две недели, чтобы было что посмотреть.</li>
+      </ul>
+    </details>
+  </aside>
+
+  <main class="stage">
+    <div class="boot" id="boot">
+      <div class="boot__card">
+        <div class="boot__title">Запускаем Snag в браузере</div>
+        <div class="boot__bar"><span id="boot-bar"></span></div>
+        <div class="boot__text" id="boot-text">Загружаем WebAssembly…</div>
+      </div>
+    </div>
+    <iframe id="ui" title="Интерфейс Snag" hidden></iframe>
+  </main>
+</div>
+
+<script>
+// Код «магазина» нарочно с ошибками. Он лежит прямо в странице,
+// поэтому Snag покажет эти строки в стектрейсе с подсветкой.
+var catalog = new Map([[1, { name: 'Кофемолка «Утро»', price: 7990 }]]);
+
+function calcTotal(items) {
+  var sum = 0;
+  for (var i = 0; i < items.length; i++) {
+    var product = catalog.get(items[i]);
+    // товара 404 в каталоге нет, product будет undefined
+    sum += product.price;
+  }
+  return sum;
+}
+
+function addToCart() {
+  Sentry.addBreadcrumb({ category: 'ui.click', message: 'Добавить в корзину' });
+  var total = calcTotal([1, 404]);
+  document.title = 'Итого ' + total;
+}
+
+function checkPromo(code) {
+  return Promise.reject(new Error('Промокод ' + code + ' истёк 31 августа'));
+}
+
+async function applyPromo(code) {
+  Sentry.addBreadcrumb({ category: 'ui.click', message: 'Применить промокод ' + code });
+  var discount = await checkPromo(code);
+  return discount;
+}
+
+class PaymentError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'PaymentError';
+    this.status = status;
+  }
+}
+
+async function pay(amount) {
+  Sentry.addBreadcrumb({ category: 'payment', message: 'Отправляем платёж ' + amount + ' ₽' });
+  throw new PaymentError('Платёжный шлюз ответил 502 Bad Gateway', 502);
+}
+
+async function payClick() {
+  try {
+    await pay(7990);
+  } catch (e) {
+    Sentry.captureException(e, { tags: { payment_method: 'card' }, extra: { amount: 7990 } });
+  }
+}
+
+function breakManyTimes() {
+  for (var i = 0; i < 25; i++) {
+    try {
+      calcTotal([1, 404 + i]);
+    } catch (e) {
+      Sentry.captureException(e);
+    }
+  }
+}
+
+window.addEventListener('demo:ready', function () {
+  var actions = {
+    cart: addToCart,
+    // промис никто не ждёт: ошибка всплывёт как unhandledrejection
+    promo: function () { applyPromo('LETO2026'); },
+    pay: payClick,
+    many: breakManyTimes,
+  };
+  document.querySelectorAll('[data-action]').forEach(function (btn) {
+    btn.disabled = false;
+    btn.addEventListener('click', actions[btn.dataset.action]);
+  });
+});
+</script>
+</body>
+</html>

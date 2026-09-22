@@ -40,6 +40,8 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
+      - name: WebAssembly build (demo)
+        run: GOOS=js GOARCH=wasm go vet ./cmd/snag-wasm && GOOS=js GOARCH=wasm go build -o /dev/null ./cmd/snag-wasm
       - run: go test -race -count=1 ./...
       - name: fuzz envelope parser
         run: go test -run '^$' -fuzz FuzzParse -fuzztime 30s ./internal/envelope/

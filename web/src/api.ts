@@ -18,12 +18,43 @@ const fetchTransport: Transport = async (method, url, headers, body) => {
 
 declare global {
   interface Window {
-    snag?: { fetch: Transport; demo: true };
+    snag?: { fetch: Transport; demo: true; dsn: string; project: number; events: number };
+    snagReady?: Promise<void>;
   }
 }
 
+// В демо интерфейс открыт во фрейме, а Snag (WebAssembly) живёт на
+// родительской странице: берём его оттуда. Чужой родитель (интерфейс
+// встроили на другой сайт) бросит исключение — тогда обычный fetch.
+function host(): Window | null {
+  if (window.snag) return window;
+  try {
+    if (window.parent !== window && window.parent.snag) return window.parent;
+  } catch {
+    // другой origin
+  }
+  return null;
+}
+
+// isEmbeddedDemo: интерфейс открыт во фрейме демо-страницы.
+export function isEmbeddedDemo(): boolean {
+  const h = host();
+  return h !== null && h !== window;
+}
+
 function transport(): Transport {
-  return window.snag?.fetch ?? fetchTransport;
+  return host()?.snag?.fetch ?? fetchTransport;
+}
+
+// waitForDemo: в демо дожидаемся, пока WebAssembly загрузится и
+// разложит историю по проблемам.
+export async function waitForDemo(): Promise<void> {
+  try {
+    const ready = window.snagReady ?? (window.parent !== window ? window.parent.snagReady : undefined);
+    if (ready) await ready;
+  } catch {
+    // другой origin
+  }
 }
 
 export class ApiError extends Error {
@@ -110,6 +141,14 @@ export function useApi<T>(path: string | null, refreshMs = 0) {
   useEffect(() => {
     setData(null);
     load();
+  }, [load]);
+
+  // Демо-страница шлёт snag:refresh, как только отправила ошибку:
+  // список обновляется сразу, не дожидаясь таймера.
+  useEffect(() => {
+    const on = () => load(true);
+    window.addEventListener('snag:refresh', on);
+    return () => window.removeEventListener('snag:refresh', on);
   }, [load]);
 
   useEffect(() => {

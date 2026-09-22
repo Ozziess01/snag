@@ -1,0 +1,84 @@
+:root {
+  color-scheme: dark;
+  --bg: #0c0e13;
+  --panel: #141821;
+  --panel-2: #1a1f2a;
+  --line: #242a37;
+  --line-2: #303848;
+  --text: #e8eaf0;
+  --soft: #bcc2d0;
+  --muted: #858da2;
+  --accent: #ff5b45;
+  --accent-2: #ff7a66;
+  --ok: #3ecf8e;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+body { display: flex; flex-direction: column; }
+a { color: var(--accent-2); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: var(--mono); font-size: 12.5px; color: var(--soft); }
+.narrow { display: none; }
+
+.bar { display: flex; align-items: center; gap: 18px; height: 52px; padding: 0 18px; border-bottom: 1px solid var(--line); background: #0f1218; flex: none; }
+.bar__logo { display: inline-flex; align-items: center; gap: 9px; font-weight: 700; font-size: 17px; color: var(--text); text-decoration: none !important; }
+.bar__logo svg { width: 24px; height: 24px; }
+.bar__logo rect { fill: var(--accent); }
+.bar__logo path { stroke: #fff; stroke-width: 3; fill: none; stroke-linecap: round; }
+.bar__badge { font-size: 11px; font-weight: 600; color: var(--accent-2); background: rgba(255, 91, 69, .14); border-radius: 999px; padding: 1px 8px; }
+.bar__lead { margin: 0; color: var(--muted); font-size: 13px; }
+.bar__links { margin-left: auto; display: flex; gap: 16px; font-size: 13px; }
+
+.layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 360px minmax(0, 1fr); }
+
+.shop { overflow-y: auto; padding: 22px 20px; border-right: 1px solid var(--line); background: #0f1218; }
+.shop h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: -0.01em; }
+.shop__lead { margin: 0 0 18px; color: var(--muted); font-size: 13.5px; }
+
+.product { display: flex; align-items: center; gap: 14px; padding: 12px; margin-bottom: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.product__img { width: 56px; height: 56px; border-radius: 10px; flex: none; background: radial-gradient(circle at 35% 30%, #d9a066, #6b3f1d 70%); }
+.product__name { font-weight: 600; }
+.product__price { color: var(--muted); }
+
+.actions { display: flex; flex-direction: column; gap: 8px; }
+.actions button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; padding: 11px 14px; text-align: left;
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px; color: var(--text); font: inherit; cursor: pointer;
+  transition: border-color .12s, background .12s, transform .06s;
+}
+.actions button:hover:not(:disabled) { border-color: var(--accent); background: #1f2430; }
+.actions button:active:not(:disabled) { transform: translateY(1px); }
+.actions button:disabled { opacity: .5; cursor: wait; }
+.actions button b { font-weight: 600; }
+.actions button span { color: var(--muted); font-size: 12.5px; }
+.actions button:first-child { border-color: rgba(255, 91, 69, .5); }
+
+.shop__status { margin: 14px 2px; color: var(--muted); font-size: 13px; min-height: 20px; }
+.shop__status--ok { color: var(--ok); }
+
+.how { margin-top: 8px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--soft); }
+.how summary { cursor: pointer; font-weight: 600; color: var(--text); }
+.how ul { margin: 10px 0 0; padding-left: 18px; }
+.how li { margin-bottom: 6px; }
+
+.stage { position: relative; min-width: 0; min-height: 0; }
+.stage iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+.boot { position: absolute; inset: 0; display: grid; place-items: center; }
+.boot__card { width: min(360px, 90%); padding: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.boot__title { font-weight: 600; margin-bottom: 12px; }
+.boot__bar { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+.boot__bar span { display: block; height: 100%; width: 3%; background: var(--accent); transition: width .2s; }
+.boot__text { margin-top: 10px; color: var(--muted); font-size: 13px; }
+
+@media (max-width: 900px) {
+  body { height: auto; }
+  .bar__lead { display: none; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .shop { border-right: 0; border-bottom: 1px solid var(--line); }
+  .stage { height: 88vh; }
+  .wide { display: none; }
+  .narrow { display: inline; }
+}

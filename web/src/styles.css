@@ -96,6 +96,7 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .side__user { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .main { min-width: 0; }
+.app--embedded { grid-template-columns: minmax(0, 1fr); }
 .page { padding: 26px 32px 60px; max-width: 1360px; }
 .page--narrow { max-width: 860px; }
 .page__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 20px; }

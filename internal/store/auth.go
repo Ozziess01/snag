@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -34,13 +35,17 @@ func HashPassword(password string) (string, error) {
 }
 
 // dummyHash сравнивается, когда пользователя нет: иначе по времени ответа
-// можно было бы узнать, какие почты зарегистрированы.
-var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("snag-dummy-password"), 12)
+// можно было бы узнать, какие почты зарегистрированы. Считается при первом
+// входе, а не при запуске: в демо (WebAssembly) вход не нужен вовсе.
+var dummyHash = sync.OnceValue(func() []byte {
+	h, _ := bcrypt.GenerateFromPassword([]byte("snag-dummy-password"), 12)
+	return h
+})
 
 // CheckPassword сравнивает пароль с хешем; пустой хеш — «пользователя нет».
 func CheckPassword(hash, password string) bool {
 	if hash == "" {
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		_ = bcrypt.CompareHashAndPassword(dummyHash(), []byte(password))
 		return false
 	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil

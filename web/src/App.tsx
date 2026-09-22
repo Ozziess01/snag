@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, setUnauthorizedHandler } from './api';
+import { api, isEmbeddedDemo, setUnauthorizedHandler } from './api';
 import { navigate, useRoute } from './router';
 import type { Project, User } from './types';
 import { ErrorBox, Logo, Spinner } from './components/ui';
@@ -68,8 +68,12 @@ export default function App() {
   const currentProject =
     route.name === 'issues' || route.name === 'setup' ? route.projectId : null;
 
+  // Во фрейме демо боковое меню лишнее: проект один, место нужнее списку.
+  const embedded = isEmbeddedDemo();
+
   return (
-    <div className="app">
+    <div className={`app ${embedded ? 'app--embedded' : ''}`}>
+      {!embedded && (
       <aside className="side">
         <a className="side__brand" href="#/">
           <Logo />
@@ -104,6 +108,7 @@ export default function App() {
           )}
         </div>
       </aside>
+      )}
 
       <main className="main">
         {error && <ErrorBox message={error} retry={loadProjects} />}
