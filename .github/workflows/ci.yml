@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: snag
+          POSTGRES_PASSWORD: snag
+          POSTGRES_DB: snag
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U snag -d snag"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8
+        env:
+          CLICKHOUSE_USER: snag
+          CLICKHOUSE_PASSWORD: snag
+          CLICKHOUSE_DB: snag
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "clickhouse-client -u snag --password snag -q 'SELECT 1'"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      SNAG_TEST_PG: postgres://snag:snag@localhost:5432/snag?sslmode=disable
+      SNAG_TEST_CH: clickhouse://snag:snag@localhost:9000/snag
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: fuzz envelope parser
+        run: go test -run '^$' -fuzz FuzzParse -fuzztime 30s ./internal/envelope/
