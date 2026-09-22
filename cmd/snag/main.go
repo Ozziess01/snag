@@ -1,11 +1,10 @@
 // Команда snag — сервис приёма ошибок, совместимый с SDK Sentry.
 //
-// Пока без базы: проекты задаются переменной окружения, принятые события
-// пишутся в лог. Хранилище появится следующим шагом.
+//	snag serve                   запустить приём (по умолчанию)
+//	snag migrate                 накатить миграции Postgres и ClickHouse
+//	snag project create <name>   создать проект и напечатать DSN
 //
-//	SNAG_ADDR=:8000 SNAG_PROJECTS=1:publickey,2:otherkey snag
-//
-// DSN для SDK: http://publickey@localhost:8000/1
+// Настройки — переменные окружения, см. config().
 package main
 
 import (
@@ -22,29 +21,141 @@ import (
 	"time"
 
 	"github.com/Ozziess01/snag/internal/ingest"
+	"github.com/Ozziess01/snag/internal/pipeline"
+	"github.com/Ozziess01/snag/internal/store/ch"
+	"github.com/Ozziess01/snag/internal/store/pg"
 )
+
+type Config struct {
+	Addr      string
+	PublicURL string
+	PgDSN     string
+	ChDSN     string
+	QueueSize int
+	BatchSize int
+}
+
+func config() Config {
+	return Config{
+		Addr:      env("SNAG_ADDR", ":8000"),
+		PublicURL: strings.TrimRight(env("SNAG_PUBLIC_URL", "http://localhost:8000"), "/"),
+		PgDSN:     env("SNAG_PG_DSN", "postgres://snag:snag@127.0.0.1:15432/snag?sslmode=disable"),
+		ChDSN:     env("SNAG_CH_DSN", "clickhouse://snag:snag@127.0.0.1:19000/snag"),
+		QueueSize: envInt("SNAG_QUEUE_SIZE", 10_000),
+		BatchSize: envInt("SNAG_BATCH_SIZE", 5_000),
+	}
+}
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	if err := run(log); err != nil {
-		log.Error("snag остановлен", "err", err)
+	args := os.Args[1:]
+	var err error
+	switch {
+	case len(args) == 0 || args[0] == "serve":
+		err = serve(log, config())
+	case args[0] == "migrate":
+		err = migrate(context.Background(), config())
+	case len(args) == 3 && args[0] == "project" && args[1] == "create":
+		err = createProject(context.Background(), config(), args[2])
+	default:
+		fmt.Fprintln(os.Stderr, "использование: snag [serve | migrate | project create <name>]")
+		os.Exit(2)
+	}
+	if err != nil {
+		log.Error("snag", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
-	addr := env("SNAG_ADDR", ":8000")
-	projects, err := parseProjects(env("SNAG_PROJECTS", ""))
+func openStores(ctx context.Context, cfg Config) (*pg.Store, *ch.Store, error) {
+	p, err := pg.Open(ctx, cfg.PgDSN)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := ch.Open(ctx, cfg.ChDSN)
+	if err != nil {
+		p.Close()
+		return nil, nil, err
+	}
+	return p, c, nil
+}
+
+func migrate(ctx context.Context, cfg Config) error {
+	p, c, err := openStores(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	if len(projects) == 0 {
-		return errors.New("не задан ни один проект: SNAG_PROJECTS=1:publickey")
+	defer p.Close()
+	defer c.Close()
+	if err := p.Migrate(ctx); err != nil {
+		return err
+	}
+	return c.Migrate(ctx)
+}
+
+func createProject(ctx context.Context, cfg Config, name string) error {
+	if err := migrate(ctx, cfg); err != nil {
+		return err
+	}
+	p, err := pg.Open(ctx, cfg.PgDSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	np, err := p.CreateProject(ctx, name)
+	if err != nil {
+		return err
+	}
+	scheme, host, _ := strings.Cut(cfg.PublicURL, "://")
+	fmt.Printf("Проект %q создан (id %d, slug %s)\nDSN: %s://%s@%s/%d\n", name, np.ID, np.Slug, scheme, np.PublicKey, host, np.ID)
+	return nil
+}
+
+func serve(log *slog.Logger, cfg Config) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pgStore, chStore, err := openStores(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pgStore.Close()
+	defer chStore.Close()
+	if err := pgStore.Migrate(ctx); err != nil {
+		return err
+	}
+	if err := chStore.Migrate(ctx); err != nil {
+		return err
 	}
 
+	queue := pipeline.NewQueue(cfg.QueueSize)
+	worker := &pipeline.Worker{
+		Queue:      queue,
+		Issues:     pgStore,
+		Events:     chStore,
+		Log:        log,
+		BatchSize:  cfg.BatchSize,
+		FlushEvery: time.Second,
+		Retries:    4,
+		OnChange: func(_ context.Context, changes []pipeline.Change) {
+			for _, c := range changes {
+				what := "новая проблема"
+				if c.Issue.Regressed {
+					what = "проблема вернулась"
+				}
+				log.Info(what, "project", c.Issue.ProjectID, "issue", c.Issue.ID, "title", c.Event.Title())
+			}
+		},
+	}
+	workerDone := make(chan struct{})
+	go func() {
+		worker.Run(context.Background())
+		close(workerDone)
+	}()
+
 	h := &ingest.Handler{
-		Projects:       projects,
-		Sink:           logSink{log},
+		Projects:       pgStore,
+		Sink:           queue,
 		Log:            log,
 		MaxBodySize:    20 << 20,
 		MaxDecodedSize: 50 << 20,
@@ -52,84 +163,57 @@ func run(log *slog.Logger) error {
 	}
 	mux := http.NewServeMux()
 	h.Register(mux)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "ok queue=%d written=%d dropped=%d\n", queue.Len(), worker.Stats.Written.Load(), worker.Stats.Dropped.Load())
+	})
 
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              cfg.Addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("snag слушает", "addr", addr, "projects", len(projects))
+		log.Info("snag слушает", "addr", cfg.Addr)
 		errc <- srv.ListenAndServe()
 	}()
 
 	select {
 	case err := <-errc:
-		return err
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
 	case <-ctx.Done():
 	}
+
+	// Порядок остановки: сначала перестаём принимать, потом закрываем
+	// очередь и ждём, пока воркер допишет всё принятое.
 	log.Info("останавливаюсь")
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdown)
-}
-
-// staticProjects — проекты из переменной окружения, пока нет базы.
-type staticProjects map[string]ingest.Project
-
-func (s staticProjects) ByKey(_ context.Context, key string) (ingest.Project, bool) {
-	p, ok := s[key]
-	return p, ok
-}
-
-func parseProjects(spec string) (staticProjects, error) {
-	out := staticProjects{}
-	for _, part := range strings.Split(spec, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		idStr, key, ok := strings.Cut(part, ":")
-		id, err := strconv.ParseUint(idStr, 10, 64)
-		if !ok || err != nil || key == "" {
-			return nil, fmt.Errorf("SNAG_PROJECTS: ждём id:ключ, пришло %q", part)
-		}
-		out[key] = ingest.Project{ID: id}
+	_ = srv.Shutdown(shutdown)
+	queue.Close()
+	select {
+	case <-workerDone:
+	case <-time.After(30 * time.Second):
+		log.Error("воркер не успел дописать очередь", "left", queue.Len())
 	}
-	return out, nil
-}
-
-// logSink пишет короткую сводку по событию в лог.
-type logSink struct{ log *slog.Logger }
-
-func (s logSink) Accept(_ context.Context, a ingest.Accepted) error {
-	e := a.Event
-	sdk := ""
-	if e.SDK != nil {
-		sdk = e.SDK.Name + "/" + e.SDK.Version
-	}
-	s.log.Info("событие",
-		"project", a.ProjectID,
-		"id", e.EventID,
-		"level", e.Level,
-		"title", e.Title(),
-		"culprit", e.Culprit(),
-		"platform", e.Platform,
-		"sdk", sdk,
-	)
+	log.Info("остановлен", "written", worker.Stats.Written.Load(), "dropped", worker.Stats.Dropped.Load())
 	return nil
 }
 
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
 		return v
 	}
 	return def

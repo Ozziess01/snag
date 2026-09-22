@@ -33,10 +33,13 @@ type Project struct {
 	AllowedOrigins []string
 }
 
-// Projects ищет проект по публичному ключу DSN.
+// Projects ищет проект по публичному ключу DSN. Неизвестный ключ —
+// ErrUnknownKey; любая другая ошибка значит, что хранилище недоступно.
 type Projects interface {
-	ByKey(ctx context.Context, key string) (Project, bool)
+	ByKey(ctx context.Context, key string) (Project, error)
 }
+
+var ErrUnknownKey = errors.New("ingest: неизвестный ключ")
 
 // Accepted — событие, прошедшее проверку.
 type Accepted struct {
@@ -47,10 +50,12 @@ type Accepted struct {
 	ClientIP   string
 }
 
-// Sink принимает события. ErrBusy означает «очередь полна»: SDK получит 429
-// и повторит позже.
+// Sink принимает события одного запроса. Пачка принимается целиком или
+// не принимается вовсе: SDK повторяет запрос полностью, и половина
+// принятого конверта превратилась бы в дубли. ErrBusy означает «очередь
+// полна»: SDK получит 429 и повторит позже.
 type Sink interface {
-	Accept(ctx context.Context, a Accepted) error
+	Accept(ctx context.Context, batch []Accepted) error
 }
 
 var ErrBusy = errors.New("ingest: очередь переполнена")
@@ -124,10 +129,8 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 		eventID = e.EventID
 		batch = append(batch, Accepted{ProjectID: project.ID, Event: e, Raw: item.Payload, ReceivedAt: received, ClientIP: clientIP(r)})
 	}
-	for _, a := range batch {
-		if !h.accept(w, r, a) {
-			return
-		}
+	if len(batch) > 0 && !h.accept(w, r, batch) {
+		return
 	}
 	writeID(w, eventID)
 }
@@ -154,7 +157,7 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 	}
 	received := h.now()
 	event.Normalize(e, "", received)
-	if !h.accept(w, r, Accepted{ProjectID: project.ID, Event: e, Raw: body, ReceivedAt: received, ClientIP: clientIP(r)}) {
+	if !h.accept(w, r, []Accepted{{ProjectID: project.ID, Event: e, Raw: body, ReceivedAt: received, ClientIP: clientIP(r)}}) {
 		return
 	}
 	writeID(w, e.EventID)
@@ -200,9 +203,16 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, key string) 
 		h.fail(w, http.StatusUnauthorized, "нет ключа: ждём X-Sentry-Auth, sentry_key в query или dsn в конверте")
 		return Project{}, false
 	}
-	project, ok := h.Projects.ByKey(r.Context(), key)
-	if !ok {
+	project, err := h.Projects.ByKey(r.Context(), key)
+	switch {
+	case errors.Is(err, ErrUnknownKey):
 		h.fail(w, http.StatusUnauthorized, "неизвестный ключ")
+		return Project{}, false
+	case err != nil:
+		// 401 SDK считает окончательным отказом и выбрасывает событие,
+		// а 503 — временной проблемой и повторяет позже.
+		h.Log.Error("поиск проекта", "err", err)
+		h.fail(w, http.StatusServiceUnavailable, "хранилище проектов недоступно")
 		return Project{}, false
 	}
 	if r.PathValue("project") != fmt.Sprint(project.ID) {
@@ -216,8 +226,8 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request, key string) 
 	return project, true
 }
 
-func (h *Handler) accept(w http.ResponseWriter, r *http.Request, a Accepted) bool {
-	err := h.Sink.Accept(r.Context(), a)
+func (h *Handler) accept(w http.ResponseWriter, r *http.Request, batch []Accepted) bool {
+	err := h.Sink.Accept(r.Context(), batch)
 	switch {
 	case err == nil:
 		return true
@@ -227,7 +237,7 @@ func (h *Handler) accept(w http.ResponseWriter, r *http.Request, a Accepted) boo
 		w.Header().Set("X-Sentry-Rate-Limits", "5::organization")
 		h.fail(w, http.StatusTooManyRequests, "сервер перегружен, повторите позже")
 	default:
-		h.Log.Error("sink", "err", err, "project", a.ProjectID)
+		h.Log.Error("sink", "err", err, "project", batch[0].ProjectID)
 		h.fail(w, http.StatusServiceUnavailable, "не удалось принять событие")
 	}
 	return false

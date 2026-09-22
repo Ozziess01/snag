@@ -1,7 +1,9 @@
+import os
+
 import sentry_sdk
 
 sentry_sdk.init(
-    dsn="http://python@127.0.0.1:9911/1",
+    dsn=os.environ.get("SENTRY_DSN", "http://python@127.0.0.1:9911/1"),
     release="demo@1.2.0",
     environment="test",
     send_default_pii=True,

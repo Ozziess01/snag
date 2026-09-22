@@ -16,9 +16,17 @@ func loadConfig(path string) error {
 	return nil
 }
 
+// dsn: по умолчанию сервер записи фикстур, SENTRY_DSN — чтобы слать в snag.
+func dsn() string {
+	if v := os.Getenv("SENTRY_DSN"); v != "" {
+		return v
+	}
+	return "http://gosdk@127.0.0.1:9911/1"
+}
+
 func main() {
 	err := sentry.Init(sentry.ClientOptions{
-		Dsn:              "http://gosdk@127.0.0.1:9911/1",
+		Dsn:              dsn(),
 		Release:          "demo@1.2.0",
 		Environment:      "test",
 		AttachStacktrace: true,

@@ -3,7 +3,7 @@
 require __DIR__ . '/vendor/autoload.php';
 
 \Sentry\init([
-    'dsn' => 'http://php@127.0.0.1:9911/1',
+    'dsn' => getenv('SENTRY_DSN') ?: 'http://php@127.0.0.1:9911/1',
     'release' => 'demo@1.2.0',
     'environment' => 'test',
     'send_default_pii' => true,

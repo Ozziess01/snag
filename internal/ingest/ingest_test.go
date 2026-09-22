@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,9 +25,15 @@ import (
 
 type memProjects map[string]Project
 
-func (m memProjects) ByKey(_ context.Context, key string) (Project, bool) {
+func (m memProjects) ByKey(_ context.Context, key string) (Project, error) {
+	if key == "db-down" {
+		return Project{}, errors.New("connection refused")
+	}
 	p, ok := m[key]
-	return p, ok
+	if !ok {
+		return Project{}, ErrUnknownKey
+	}
+	return p, nil
 }
 
 type memSink struct {
@@ -35,13 +42,13 @@ type memSink struct {
 	busy bool
 }
 
-func (s *memSink) Accept(_ context.Context, a Accepted) error {
+func (s *memSink) Accept(_ context.Context, batch []Accepted) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.busy {
 		return ErrBusy
 	}
-	s.got = append(s.got, a)
+	s.got = append(s.got, batch...)
 	return nil
 }
 
@@ -196,6 +203,7 @@ func TestAuthAndRouting(t *testing.T) {
 		{"ключ в dsn конверта", post("/api/1/envelope/", `{"dsn":"https://k1@snag.example/1"}`+"\n{\"type\":\"event\"}\n{}\n", nil), 200},
 		{"без ключа", post("/api/1/envelope/", body, nil), 401},
 		{"неизвестный ключ", post("/api/1/envelope/?sentry_key=nope", body, nil), 401},
+		{"база проектов недоступна", post("/api/1/envelope/?sentry_key=db-down", body, nil), 503},
 		{"ключ от другого проекта", post("/api/2/envelope/", body, auth), 403},
 		{"разрешённый Origin", post("/api/2/envelope/?sentry_key=k2", body, map[string]string{"Origin": "https://shop.example"}), 200},
 		{"чужой Origin", post("/api/2/envelope/?sentry_key=k2", body, map[string]string{"Origin": "https://evil.example"}), 403},

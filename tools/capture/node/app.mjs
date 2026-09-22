@@ -1,7 +1,7 @@
 import * as Sentry from '@sentry/node';
 
 Sentry.init({
-  dsn: 'http://node@127.0.0.1:9911/1',
+  dsn: process.env.SENTRY_DSN || 'http://node@127.0.0.1:9911/1',
   release: 'demo@1.2.0',
   environment: 'test',
   sendDefaultPii: true,
